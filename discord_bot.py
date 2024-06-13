@@ -28,11 +28,19 @@ ytdl_format_options = {
     'source_address': '0.0.0.0'  # Bind to ipv4 since ipv6 addresses cause issues sometimes
 }
 
+#für Windows
 ffmpeg_options = {
     'executable': 'C:/ffmpeg/bin/ffmpeg.exe',  # Pfad zu ffmpeg angeben
     'options': '-vn'
 }
 
+#für Linux
+""" 
+ffmpeg_options = {
+    'executable': '/usr/bin/ffmpeg',  # Pfad zu ffmpeg angeben
+    'options': '-vn'
+}
+"""
 ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
 class YTDLSource(discord.PCMVolumeTransformer):
