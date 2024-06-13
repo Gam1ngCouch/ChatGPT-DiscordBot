@@ -1,2 +1,5 @@
 discord.py
 openai
+yt_dlp
+youtube_dl
+asyncio

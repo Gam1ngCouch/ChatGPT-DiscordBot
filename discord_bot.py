@@ -1,5 +1,8 @@
 import discord
 import openai
+import yt_dlp as youtube_dl
+import asyncio
+from discord.utils import get
 from config import DISCORD_TOKEN, OPENAI_API_KEY, ROLE_ID
 
 openai.api_key = OPENAI_API_KEY
@@ -9,6 +12,93 @@ intents.message_content = True
 intents.messages = True  # Erforderlich für das Löschen von Nachrichten
 intents.voice_states = True  # Erforderlich für Sprachkanal-Events
 client = discord.Client(intents=intents)
+
+youtube_dl.utils.bug_reports_message = lambda: ''
+
+ytdl_format_options = {
+    'format': 'bestaudio/best',
+    'restrictfilenames': True,
+    'noplaylist': True,
+    'nocheckcertificate': True,
+    'ignoreerrors': False,
+    'logtostderr': False,
+    'quiet': True,
+    'no_warnings': True,
+    'default_search': 'auto',
+    'source_address': '0.0.0.0'  # Bind to ipv4 since ipv6 addresses cause issues sometimes
+}
+
+ffmpeg_options = {
+    'executable': 'C:/ffmpeg/bin/ffmpeg.exe',  # Pfad zu ffmpeg angeben
+    'options': '-vn'
+}
+
+ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+
+class YTDLSource(discord.PCMVolumeTransformer):
+    def __init__(self, source, *, data, volume=0.5):
+        super().__init__(source, volume)
+
+        self.data = data
+
+        self.title = data.get('title')
+        self.url = data.get('url')
+
+    @classmethod
+    async def from_url(cls, url, *, loop=None, stream=False):
+        loop = loop or asyncio.get_running_loop()
+        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+
+        if 'entries' in data:
+            # take first item from a playlist
+            data = data['entries'][0]
+
+        filename = data['url'] if stream else ytdl.prepare_filename(data)
+        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+
+class MusicPlayer:
+    def __init__(self, loop):
+        self.current = None
+        self.queue = asyncio.Queue()
+        self.next = asyncio.Event()
+        self.voice_client = None
+        self.loop = loop
+
+    async def play_next(self):
+        self.next.clear()
+        try:
+            self.current = await self.queue.get()
+        except asyncio.QueueEmpty:
+            self.current = None
+
+        if self.current:
+            self.voice_client.play(self.current, after=self.toggle_next)
+            await self.next.wait()
+        else:
+            self.voice_client.stop()
+
+    def toggle_next(self, error=None):
+        if error:
+            print(f'Player error: {error}')
+        self.loop.call_soon_threadsafe(self.next.set)
+
+    async def add_to_queue(self, song):
+        await self.queue.put(song)
+        if not self.voice_client.is_playing():
+            await self.play_next()
+
+    async def stop(self):
+        if self.voice_client.is_playing():
+            self.voice_client.stop()
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        self.next.set()
+        await self.voice_client.disconnect()
+
+    async def skip(self):
+        if self.voice_client.is_playing():
+            self.voice_client.stop()
+        await self.play_next()
 
 async def get_chatgpt_response(prompt):
     try:
@@ -63,6 +153,21 @@ def get_help_embed():
         inline=False
     )
     embed.add_field(
+        name="!music <YouTube-Link>",
+        value="Spielt das angegebene YouTube-Video im Sprachkanal des Benutzers ab.",
+        inline=False
+    )
+    embed.add_field(
+        name="!stop",
+        value="Stoppt die Wiedergabe und leert die Warteschlange. Der Bot verlässt den Sprachkanal.",
+        inline=False
+    )
+    embed.add_field(
+        name="!skip",
+        value="Überspringt den aktuellen Titel und spielt den nächsten in der Warteschlange.",
+        inline=False
+    )
+    embed.add_field(
         name="!hilfe",
         value="Zeigt diese Hilfe-Nachricht an.",
         inline=False
@@ -79,13 +184,13 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    if message.content.startswith('!ask'):
-        prompt = message.content[len('!ask '):].strip()
+    if message.content.startswith('!chat'):
+        prompt = message.content[len('!chat '):].strip()
         response = await get_chatgpt_response(prompt)
         await message.channel.send(response)
 
-    elif message.content.startswith('!bild'):
-        prompt = message.content[len('!bild '):].strip()
+    elif message.content.startswith('!image'):
+        prompt = message.content[len('!image '):].strip()
         image_url = await generate_image(prompt)
         await message.channel.send(image_url)
 
@@ -134,6 +239,35 @@ async def on_message(message):
         else:
             await message.channel.send(f'Temporärer Sprachkanal "{channel_name}" wurde erstellt, aber du bist in keinem Sprachkanal.', delete_after=10)
 
+    elif message.content.startswith('!music'):
+        if message.author.voice:
+            voice_channel = message.author.voice.channel
+            url = message.content[len('!music '):].strip()
+
+            voice_client = get(client.voice_clients, guild=message.guild)
+            if not voice_client:
+                voice_client = await voice_channel.connect()
+
+            music_player.voice_client = voice_client
+
+            async with message.channel.typing():
+                player = await YTDLSource.from_url(url, loop=client.loop, stream=True)
+                await music_player.add_to_queue(player)
+
+            await message.channel.send(f'Zur Warteschlange hinzugefügt: {player.title}', delete_after=30)
+        else:
+            await message.channel.send('Du musst dich in einem Sprachkanal befinden, um Musik abzuspielen.', delete_after=10)
+
+    elif message.content.startswith('!stop'):
+        if music_player.voice_client:
+            await music_player.stop()
+            await message.channel.send('Musikwiedergabe gestoppt und Warteschlange geleert. Der Bot hat den Sprachkanal verlassen.', delete_after=10)
+
+    elif message.content.startswith('!skip'):
+        if music_player.voice_client:
+            await music_player.skip()
+            await message.channel.send('Titel übersprungen.', delete_after=10)
+
     elif message.content.startswith('!hilfe'):
         help_embed = get_help_embed()
         await message.channel.send(embed=help_embed)
@@ -148,4 +282,8 @@ async def on_voice_state_update(member, before, after):
             if not any(c for c in before.channel.category.channels if isinstance(c, discord.VoiceChannel)):
                 await before.channel.category.delete()
 
-client.run(DISCORD_TOKEN)
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    music_player = MusicPlayer(loop)
+    client.run(DISCORD_TOKEN)
