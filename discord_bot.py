@@ -3,7 +3,7 @@ import openai
 import yt_dlp as youtube_dl
 import asyncio
 from discord.utils import get
-from config import DISCORD_TOKEN, OPENAI_API_KEY, ROLE_ID
+from config import DISCORD_TOKEN, OPENAI_API_KEY, ROLE_ID, WELCOME_MESSAGE
 
 openai.api_key = OPENAI_API_KEY
 
@@ -11,6 +11,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True  # Erforderlich für das Löschen von Nachrichten
 intents.voice_states = True  # Erforderlich für Sprachkanal-Events
+intents.members = True  # Erforderlich für Begrüßungsnachricht
 client = discord.Client(intents=intents)
 
 youtube_dl.utils.bug_reports_message = lambda: ''
@@ -156,6 +157,11 @@ def get_help_embed():
         inline=False
     )
     embed.add_field(
+        name="!message <HexColor> <Titel> <Nachricht>",
+        value="Erstellt eine eingebettete Nachricht mit der angegebenen Farbe, dem Titel und der Nachricht. (Nur für Benutzer mit der entsprechenden Rolle)",
+        inline=False
+    )
+    embed.add_field(
         name="!voice <Kanalname> <Benutzerobergrenze>",
         value="Erstellt einen temporären Sprachkanal mit dem angegebenen Namen und der optionalen Benutzerobergrenze. Der Ersteller wird direkt in den Kanal verschoben.",
         inline=False
@@ -186,6 +192,16 @@ def get_help_embed():
 @client.event
 async def on_ready():
     print(f'Wir sind eingeloggt als {client.user}')
+
+
+#welcome message
+@client.event
+async def on_member_join(member):
+    try:
+        await member.send(WELCOME_MESSAGE)
+        print(f'Begrüßungsnachricht an {member.name} gesendet.')
+    except Exception as e:
+        print(f'Fehler beim Senden der Begrüßungsnachricht an {member.name}: {e}')
 
 @client.event
 async def on_message(message):
@@ -275,6 +291,24 @@ async def on_message(message):
         if music_player.voice_client:
             await music_player.skip()
             await message.channel.send('Titel übersprungen.', delete_after=10)
+
+    elif message.content.startswith('!message'):
+        role = discord.utils.get(message.guild.roles, id=int(ROLE_ID))
+        if role in message.author.roles:
+            try:
+                parts = message.content[len('!message '):].strip().split(' ', 2)
+                if len(parts) != 3:
+                    await message.channel.send('Verwendung: !message <HexColor> <Titel> <Nachricht>', delete_after=10)
+                    return
+
+                hex_color, title, msg = parts
+                color = discord.Color(int(hex_color.lstrip('#'), 16))
+                embed = discord.Embed(title=title, description=msg, color=color)
+                await message.channel.send(embed=embed)
+            except ValueError:
+                await message.channel.send('Bitte gib eine gültige Hex-Farbe an.', delete_after=10)
+        else:
+            await message.channel.send('Du hast keine Berechtigung, diesen Befehl auszuführen.', delete_after=5)
 
     elif message.content.startswith('!hilfe'):
         help_embed = get_help_embed()
