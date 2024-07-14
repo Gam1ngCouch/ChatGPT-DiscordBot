@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build: .
+    image: gamingcouch/chatgpt-discord-bot:latest
+    container_name: chatgpt_discord_bot
+    ports:
+      - "80:80"
+    environment:
+      DISCORD_TOKEN: your_discord_token
+      OPENAI_API_KEY: your_openai_api_key
+      ROLE_ID: your_discord_role_id
+    restart: always
