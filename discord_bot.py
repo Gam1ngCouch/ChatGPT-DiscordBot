@@ -25,7 +25,8 @@ ytdl_format_options = {
     'quiet': True,
     'no_warnings': True,
     'default_search': 'auto',
-    'source_address': '0.0.0.0'  # Bind to ipv4 since ipv6 addresses cause issues sometimes
+    'source_address': '0.0.0.0',  # Bind to ipv4 since ipv6 addresses cause issues sometimes
+    'cookiefile': 'cookies.txt'   # Path to the cookies file
 }
 
 # für Linux
@@ -48,7 +49,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_running_loop()
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        try:
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        except youtube_dl.utils.DownloadError as e:
+            print(f"Download error: {e}")
+            return None
 
         if 'entries' in data:
             # take first item from a playlist
@@ -67,16 +72,10 @@ class MusicPlayer:
 
     async def play_next(self):
         self.next.clear()
-        try:
-            self.current = await self.queue.get()
-        except asyncio.QueueEmpty:
-            self.current = None
-
+        self.current = await self.queue.get()
         if self.current:
             self.voice_client.play(self.current, after=self.toggle_next)
             await self.next.wait()
-        else:
-            self.voice_client.stop()
 
     def toggle_next(self, error=None):
         if error:
@@ -253,9 +252,11 @@ async def on_message(message):
 
             async with message.channel.typing():
                 player = await YTDLSource.from_url(url, loop=client.loop, stream=True)
-                await music_player.add_to_queue(player)
-
-            await message.channel.send(f'Zur Warteschlange hinzugefügt: {player.title}', delete_after=30)
+                if player is None:
+                    await message.channel.send('Das Video konnte nicht zur Warteschlange hinzugefügt werden.', delete_after=30)
+                else:
+                    await music_player.add_to_queue(player)
+                    await message.channel.send(f'Zur Warteschlange hinzugefügt: {player.title}', delete_after=30)
         else:
             await message.channel.send('Du musst dich in einem Sprachkanal befinden, um Musik abzuspielen.', delete_after=10)
 
@@ -284,7 +285,6 @@ async def on_voice_state_update(member, before, after):
                 await before.channel.category.delete()
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = asyncio.get_event_loop()
     music_player = MusicPlayer(loop)
     client.run(DISCORD_TOKEN)
